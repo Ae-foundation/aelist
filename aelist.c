@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <limits.h>
+#include <locale.h>
 #include <ncurses.h>
 #include <signal.h>
 #include <stdio.h>
@@ -48,21 +49,20 @@
  */
 typedef struct __exe_t exe_t;
 struct __exe_t {
-	char name[2048];
-	char path[2048];
+	char name[2048], path[2048];
 	size_t siz;
 };
 
-int nprompt;	    /* -n */
-int mode;	    /* -slLr */
-char *pv[MAXPATHS]; /* paths from args*/
-size_t pvsiz;	    /* number paths */
-exe_t *ev;	    /* executables */
-size_t evsiz;	    /* number executables */
-size_t evcap;	    /* for realloc() */
-exe_t *last;	    /* last exe */
-size_t totsiz;	    /* total size all binares */
-u_char Sflag;	    /* -S */
+static int mode = DEFAULTMODE;	     /* -slLr */
+static char *pv[MAXPATHS];	     /* paths from args*/
+static size_t psiz;		     /* number paths */
+static exe_t *ev;		     /* executables */
+static size_t evsiz;		     /* number executables */
+static int nprompt = DEFAULTNPROMPT; /* -n */
+static size_t evcap;		     /* for realloc() */
+static exe_t *last;		     /* last exe */
+static size_t totsiz;		     /* total size all binares */
+static u_char Sflag;		     /* -S */
 
 /*
  *	F I N I S H
@@ -71,7 +71,7 @@ u_char Sflag;	    /* -S */
  * memory, and returns the terminal
  * to normal mode.
  */
-inline static void noreturn
+static void noreturn
 finish(int sig)
 {
 	(void)sig;
@@ -108,36 +108,29 @@ bytesfmt(size_t n)
  * this function create new fork, execute
  * <last>, and close this process
  */
-inline static void
+static void
 exec(void)
 {
-	pid_t pid;
-
 	if (!last)
 		return;
-	pid = fork();
-	if (pid == -1)
+	pid_t pid = fork();
+	if (pid < 0)
 		finish(0);
 	else if (pid == 0) {
-		if (setsid() == -1)
+		if (setsid() < 0)
 			_exit(1);
 
-		/* Is this closing threads, opening
-		 * /dev/null really necessary? */
-		close(STDIN_FILENO);
-		close(STDOUT_FILENO);
-		close(STDERR_FILENO);
-		open("/dev/null", O_RDONLY);
-		open("/dev/null", O_WRONLY);
-		open("/dev/null", O_WRONLY);
+		int fd = open("/dev/null", O_RDWR);
+		if (fd != -1) {
+			dup2(fd, STDIN_FILENO);
+			dup2(fd, STDOUT_FILENO);
+			dup2(fd, STDERR_FILENO);
+			if (fd > 2)
+				close(fd);
+		}
 
-		/* execute! */
-		execl(last->path, last->path, (char *)NULL);
-		if (ev)
-			free(ev);
-		endwin();
-		perror("execl");
-		_exit(127);
+		execl(last->path, last->path, NULL);
+		_exit(1);
 	}
 
 	finish(0);
@@ -150,34 +143,32 @@ exec(void)
  * outputs the necessary information according
  * to the mode
  */
-inline static void
+static void
 search(char *in)
 {
-	size_t fi;
-	size_t sum;
-	size_t n;
+	size_t fi = 1, sum, n;
 	int y, x;
-	u_char s;
+	bool s = 0;
 
-	sum = s = 0;
 	getyx(stdscr, y, x);
-	for (n = 0; n < evsiz; n++)
-		if (strstr(ev[n].name, in))
-			++sum;
-	fi = 1;
+	n = sum = evsiz;
+	while (n--)
+		if (!strstr(ev[n].name, in))
+			--sum;
+
 	for (n = 0; n < evsiz && fi <= nprompt; n++) {
 		if (!strcmp(ev[n].name, in)) {
-			last = &ev[n];
-			++s;
+			*last = ev[n];
+			s = 1;
 		}
+
 		if (strstr(ev[n].name, in)) {
 			if (!s)
 				last = &ev[n];
 			if (mode == MODELONG || mode == MODESHORT)
 				mvprintw((Sflag) ? 0 : 1, 0,
-				    "exec %s (%s)"
-				    " %ld\n",
-				    last->path, bytesfmt(ev[n].siz), sum);
+				    "exec %s (%s) %ld\n", last->path,
+				    bytesfmt(ev[n].siz), sum);
 			if (mode == MODELONG) {
 				mvhline((Sflag) ? 2 : 3, 0, ACS_HLINE, 45);
 				mvprintw(fi + ((Sflag) ? 2 : 3), 0, "%s\n",
@@ -185,6 +176,10 @@ search(char *in)
 			}
 			++fi;
 		}
+	}
+	while (fi <= nprompt) {
+		move(fi++ + ((Sflag) ? 2 : 3), 0);
+		clrtoeol();
 	}
 
 	move(y, x);
@@ -198,53 +193,52 @@ search(char *in)
  * in <exe_t> in the <ev> array,
  *
  * allocating memory to it and increasing its size
- * every <EXECS_STEP> by <EXECS_STEP>.
+ * every <STEP> by <STEP>.
  */
-inline static void
+static void
 init(void)
 {
 	exe_t exe;
-	char buf[65535];
+	char buf[4096];
 	struct stat st;
 	struct dirent *d;
 	DIR *dir;
-	size_t n, t1;
+	size_t n;
 
-	d = NULL;
-	dir = NULL;
-
-	for (n = 0; n < pvsiz; n++) {
+	for (n = 0; n < psiz; n++) {
 		if (!(dir = opendir(pv[n])))
 			continue;
-		for (; (d = readdir(dir));) {
+		while ((d = readdir(dir))) {
 			if (!strcmp(d->d_name, ".") || !strcmp(d->d_name, ".."))
 				continue;
 
-			bzero(buf, sizeof(buf));
 			snprintf(buf, sizeof(buf), "%s/%s", pv[n], d->d_name);
-
-			if (stat(buf, &st) == -1)
+			if (access(buf, X_OK) != 0)
+				continue;
+			if (stat(buf, &st) < 0)
 				continue;
 
 			if (evsiz == evcap) {
-#define EXECS_STEP 512
-				t1 = evcap + EXECS_STEP;
-				exe_t *t = realloc(ev, t1 * sizeof(exe_t));
+				evcap = evcap + 1024;
+				exe_t *t = realloc(ev, evcap * sizeof(exe_t));
 				if (!t)
 					finish(0);
 				ev = t;
-				evcap = t1;
 			}
 
-			bzero(&exe, sizeof(exe));
 			snprintf(exe.name, sizeof(exe.name), "%s", d->d_name);
 			snprintf(exe.path, sizeof(exe.path), "%s", buf);
 			exe.siz = st.st_size;
-			totsiz += st.st_size;
 
+			totsiz += st.st_size;
 			ev[evsiz++] = exe;
 		}
 		closedir(dir);
+	}
+
+	if (evsiz == 0) {
+		fprintf(stderr, "Not found files in paths!\n");
+		finish(0);
 	}
 }
 
@@ -255,53 +249,48 @@ init(void)
  * the unbuffered input in <in> and does the
  * appropriate things on top of it.
  */
-inline static int
+static int
 loop(void)
 {
+	int n = 0, pos = (mode == MODELINE) ? 0 : (Sflag) ? 1 : 2;
 	char in[2048];
 	chtype c;
-	int n;
-	int cpos;
-
-	bzero(in, sizeof(in));
-	cpos = (mode == MODELINE) ? 0 : (Sflag) ? 1 : 2;
-	n = 0;
 
 	switch (mode) {
 	case MODELONG:
 	case MODESHORT:
 		if (!Sflag)
-			mvprintw(0, 0,
-			    "loaded %ld files from"
-			    " %ld paths (%s)\n",
-			    evsiz, pvsiz, bytesfmt(totsiz));
-		mvprintw((Sflag) ? 0 : 1, 0,
-		    "exec %s (%s)"
-		    " %ld\n",
-		    ev->path, bytesfmt(ev->siz), evsiz);
+			mvprintw(0, 0, "loaded %ld files from %ld paths (%s)\n",
+			    evsiz, psiz, bytesfmt(totsiz));
+		mvprintw((Sflag) ? 0 : 1, 0, "exec %s (%s) %ld\n", ev->path,
+		    bytesfmt(ev->siz), evsiz);
 		break;
 	}
 
-	mvprintw(cpos, 0, ": ");
+	mvprintw(pos, 0, ": ");
 	refresh();
 
-	for (;;) {
-		c = getch();
-		if (c == '\n')
-			break;
-		else if (c == KEY_BACKSPACE || c == 127) {
+	while ((c = getch()) != '\n') {
+		switch (c) {
+		case KEY_BACKSPACE:
+		case 127:
 			if (n > 0) {
-				in[--n] = '\0';
-				move(cpos, (2 + n));
+				in[--n] = 0;
+				move(pos, (2 + n));
 				delch();
 			}
-		} else if (n < sizeof(in) - 1) {
-			in[n++] = c;
-			addch(c);
+			break;
+		default:
+			if (n < sizeof(in) - 1) {
+				in[n++] = c;
+				addch(c);
+			}
+			break;
 		}
-		in[n] = '\0';
+		in[n] = 0;
 		search(in);
 	}
+
 	exec();
 
 	/* NOTREACHED */
@@ -309,31 +298,20 @@ loop(void)
 }
 
 /*
- *	M A I N ()
+ *	A E L I S T
  */
 int
 main(int c, char **av)
 {
-	int rez;
+	char **ptr = pv;
 	int n;
-	int j;
 
 	signal(SIGINT, finish);
 	srand(time(NULL));
-
-	mode = DEFAULTMODE;
-	Sflag = 0;
-	totsiz = 0;
-	evsiz = 0;
-	nprompt = DEFAULTNPROMPT;
-	last = NULL;
-	evcap = 0;
-	ev = NULL;
-	pvsiz = 0;
-	*pv = NULL;
+	setlocale(0, "");
 
 	if (c <= 1) {
-	L0:
+	usage:
 		fprintf(stderr, "Usage %s [options] <path ...,>\n", *av);
 		fprintf(stderr, "  -s \t\tenable short display mode\n");
 		fprintf(stderr, "  -L \t\tenable long display mode\n");
@@ -348,8 +326,8 @@ main(int c, char **av)
 		finish(0);
 	}
 
-	while ((rez = getopt(c, av, SHORTOPTS)) != EOF) {
-		switch (rez) {
+	while ((n = getopt(c, av, SHORTOPTS)) != EOF) {
+		switch (n) {
 		case 'S':
 			++Sflag;
 			break;
@@ -371,8 +349,7 @@ main(int c, char **av)
 
 			errno = 0;
 			val = strtoull(optarg, &endp, 10);
-			if (errno == ERANGE ||
-			    val > (unsigned long long)SIZE_MAX) {
+			if (errno == ERANGE) {
 			L1:
 				fprintf(stderr,
 				    "Failed convert"
@@ -393,31 +370,26 @@ main(int c, char **av)
 		case 'h':
 		case '?':
 		default:
-			goto L0;
+			goto usage;
 		}
 	}
 
-	n = c - optind;
-	if (n <= 0)
-		goto L0;
-	if (n > MAXPATHS) {
+	c -= optind;
+	psiz = c;
+
+	if (psiz <= 0)
+		goto usage;
+	if (psiz > MAXPATHS) {
 		fprintf(stderr, "Too many paths!\n");
 		finish(0);
 	}
-	pvsiz = n;
-	n = optind;
-	j = 0;
-	while (n < c) {
-		pv[j++] = av[n];
-		++n;
-	}
+
+	av += optind;
+
+	while (c--)
+		*ptr++ = *av++;
 
 	init();
-	if (evsiz == 0) {
-		fprintf(stderr, "Not found files in paths!\n");
-		finish(0);
-	}
-
 	initscr();
 	cbreak();
 	noecho();

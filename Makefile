@@ -1,7 +1,6 @@
-FLAGS=-lncurses -ltinfo -lpanel -O3 -g -Wall
+CFLAGS=-lncurses -ltinfo -lpanel -O3 -g -Wall
 
 all:
-	cc aelist.c -c $(FLAGS)
-	cc aelist.o -o aelist $(FLAGS)
+	cc $(CFLAGS) aelist.c -o aelist
 clean:
 	rm aelist.o aelist
