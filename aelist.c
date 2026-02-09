@@ -153,9 +153,9 @@ parsepath(void)
 	char *p = getenv("PATH");
 	char *token = strtok(p, ":");
 	while (token) {
-		pv[psiz++] = token;
 		if (psiz >= MAXPATHS)
 			return;
+		pv[psiz++] = token;
 		token = strtok(NULL, ":");
 	}
 }
