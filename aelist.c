@@ -33,9 +33,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SHORTOPTS      "sLn:lrhS"
+#define SHORTOPTS      "sLn:lrhSP"
 #define DEFAULTNPROMPT 30
-#define MAXPATHS       128
+#define MAXPATHS       512
 #define MODESHORT      0
 #define MODELINE       1
 #define MODELONG       2
@@ -63,6 +63,7 @@ static size_t evcap;		     /* for realloc() */
 static exe_t *last;		     /* last exe */
 static size_t totsiz;		     /* total size all binares */
 static u_char Sflag;		     /* -S */
+static u_char Pflag;		     /* -P */
 
 /*
  *	F I N I S H
@@ -134,6 +135,29 @@ exec(void)
 	}
 
 	finish(0);
+}
+
+/*
+ *		P A R S E P A T H
+ *
+ * parses the PATH environment variable and places
+ * the paths from it into the pv array, starting
+ * with pvsiz and gradually increasing it. if at
+ * any point the number of paths becomes greater
+ * than or equal to the maximum, the process is
+ * terminated
+ */
+static void
+parsepath(void)
+{
+	char *p = getenv("PATH");
+	char *token = strtok(p, ":");
+	while (token) {
+		pv[psiz++] = token;
+		if (psiz >= MAXPATHS)
+			return;
+		token = strtok(NULL, ":");
+	}
 }
 
 /*
@@ -303,14 +327,14 @@ loop(void)
 int
 main(int c, char **av)
 {
-	char **ptr = pv;
+	char **ptr;
 	int n;
 
 	signal(SIGINT, finish);
 	srand(time(NULL));
 	setlocale(0, "");
 
-	if (c <= 1) {
+	if (c < 1) {
 	usage:
 		fprintf(stderr, "Usage %s [options] <path ...,>\n", *av);
 		fprintf(stderr, "  -s \t\tenable short display mode\n");
@@ -321,6 +345,7 @@ main(int c, char **av)
 		fprintf(stderr, "  -l \t\tenable line display mode\n");
 		fprintf(stderr, "  -r \t\tspecify random display mode\n");
 		fprintf(stderr, "  -S \t\tskip the very first loading info\n");
+		fprintf(stderr, "  -P \t\tload $PATH in paths\n");
 		fprintf(stderr, "  -h \t\tshow this menu and exit\n");
 		fprintf(stderr, "\nReleased in %s %s\n", __DATE__, __TIME__);
 		finish(0);
@@ -330,6 +355,9 @@ main(int c, char **av)
 		switch (n) {
 		case 'S':
 			++Sflag;
+			break;
+		case 'P':
+			++Pflag;
 			break;
 		case 's':
 			mode = MODESHORT;
@@ -375,16 +403,17 @@ main(int c, char **av)
 	}
 
 	c -= optind;
-	psiz = c;
+	psiz += c;
 
-	if (psiz <= 0)
-		goto usage;
+	if (psiz <= 0 || Pflag)
+		parsepath();
 	if (psiz > MAXPATHS) {
 		fprintf(stderr, "Too many paths!\n");
 		finish(0);
 	}
 
 	av += optind;
+	ptr = pv;
 
 	while (c--)
 		*ptr++ = *av++;
