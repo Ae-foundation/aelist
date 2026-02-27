@@ -1,6 +1,6 @@
 Console application manager for linux like dmenu; supports search and
 3 output modes, very fast. For compilation you just need to run Makefile
-in the root folder, i.e. in the folder with aelist.c.
+in the root folder, i.e. in the folder with "aelist.c".
 
 ! The ncurses library is required for compilation.
 
@@ -38,4 +38,4 @@ Examples run,
 	./aelist -l /bin /usr/bin /sbin
 
 For example, my i3 settings were as follows:
-	bindsym $mod+d exec --no-startup-id kitty /home/lomaster/aelist/aelist -L /bin /sbin /usr/bin /usr/sbin
+	bindsym $mod+d exec --no-startup-id xterm -e aelist -L
